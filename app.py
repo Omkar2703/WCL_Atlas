@@ -278,23 +278,29 @@ def flood_color(value: Optional[float]) -> str:
 
 
 def flood_area_color(value: Optional[float]) -> str:
-    """Detailed 8-bin scale for absolute flood surface area (km²)."""
+    """Detailed 11-bin high-granularity scale for absolute flood surface area (km²)."""
     if value is None or pd.isna(value):
         return "#d9d9d9"
-    if value >= 2500:
+    if value >= 10000:
+        return "#020024"  # Extreme inundation
+    if value >= 5000:
         return "#030512"
+    if value >= 2500:
+        return "#081d58"
     if value >= 1000:
-        return "#08306b"
+        return "#253494"
     if value >= 500:
-        return "#08519c"
+        return "#225ea8"
     if value >= 250:
-        return "#2171b5"
+        return "#1d91c0"
     if value >= 100:
-        return "#4292c6"
-    if value >= 25:
-        return "#6baed6"
+        return "#41b6c4"
+    if value >= 50:
+        return "#7fcdbb"
+    if value >= 10:
+        return "#c7e9b4"
     if value > 0:
-        return "#c6dbef"
+        return "#edf8b1"
     return "#ffffd9"
 
 
@@ -349,13 +355,16 @@ LEGEND_DEFS = {
         ("No data", "#d9d9d9"),
     ],
     "flood_area": [
-        ("\u2265 2500 km\u00b2", "#030512"),
-        ("1000 \u2013 2500 km\u00b2", "#08306b"),
-        ("500 \u2013 1000 km\u00b2", "#08519c"),
-        ("250 \u2013 500 km\u00b2", "#2171b5"),
-        ("100 \u2013 250 km\u00b2", "#4292c6"),
-        ("25 \u2013 100 km\u00b2", "#6baed6"),
-        ("0 \u2013 25 km\u00b2", "#c6dbef"),
+        ("\u2265 10,000 km\u00b2", "#020024"),
+        ("5,000 \u2013 10,000 km\u00b2", "#030512"),
+        ("2,500 \u2013 5,000 km\u00b2", "#081d58"),
+        ("1,000 \u2013 2,500 km\u00b2", "#253494"),
+        ("500 \u2013 1,000 km\u00b2", "#225ea8"),
+        ("250 \u2013 500 km\u00b2", "#1d91c0"),
+        ("100 \u2013 250 km\u00b2", "#41b6c4"),
+        ("50 \u2013 100 km\u00b2", "#7fcdbb"),
+        ("10 \u2013 50 km\u00b2", "#c7e9b4"),
+        ("0 \u2013 10 km\u00b2", "#edf8b1"),
         ("0 km\u00b2 / none", "#ffffd9"),
         ("No data", "#d9d9d9"),
     ],
