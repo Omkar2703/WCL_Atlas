@@ -1,0 +1,8 @@
+# Only needed locally to run preprocess.py -- NOT installed on
+# Streamlit Community Cloud (app.py doesn't import any of these).
+geopandas>=0.14
+fiona>=1.9
+shapely>=2.0
+openpyxl>=3.1
+numpy>=1.26
+-r requirements.txt

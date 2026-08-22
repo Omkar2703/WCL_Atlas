@@ -1,11 +1,6 @@
 streamlit>=1.36
 streamlit-folium>=0.22
 folium>=0.17
-geopandas>=0.14
 pandas>=2.2
-numpy>=1.26
-openpyxl>=3.1
-pyarrow>=16.0
-shapely>=2.0
 plotly>=5.22
-fiona>=1.9
+pyarrow>=16.0
