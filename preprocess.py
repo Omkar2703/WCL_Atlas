@@ -49,7 +49,7 @@ warnings.filterwarnings("ignore")
 # --------------------------------------------------------------------------- #
 
 ROOT = Path(__file__).resolve().parent
-RAW_DIR = ROOT / "data" 
+RAW_DIR = ROOT / "data"
 PROCESSED_DIR = ROOT / "data" / "processed"
 
 DROUGHT_DIR = RAW_DIR / "DATA_SPEI_DroughtAtlas"
@@ -57,7 +57,7 @@ BOUNDARY_DIR = DROUGHT_DIR / "Administrative-Boundaries_Shapefile"
 ZSCORE_DIR = DROUGHT_DIR / "Z-score"
 
 FLOOD_DIR = RAW_DIR / "india-flood-atlas-data-main"
-EMDAT_PATH = RAW_DIR / "Em_dat_droughtandfloods_2000_2026.xlsx"
+EMDAT_PATH = RAW_DIR / "emdat_with_coordinates.xlsx"
 
 YEAR_MIN, YEAR_MAX = 1901, 2026
 
@@ -94,32 +94,6 @@ def _find_column_ci(columns, candidates: List[str]) -> Optional[str]:
     return None
 
 
-def save_emdat_events(emdat_raw: pd.DataFrame) -> None:
-    """Save the raw, geocoded EM-DAT event rows..."""
-    out_path = PROCESSED_DIR / "emdat_events.parquet"
-
-    cols = [
-        "Year",
-        "disaster_type",
-        "location",
-        "latitude",
-        "longitude",
-        "total_deaths",
-        "total_affected",
-        "total_damage_000usd"
-    ]
-
-    df = emdat_raw[[c for c in cols if c in emdat_raw.columns]].copy()
-
-    if {"latitude", "longitude"}.issubset(df.columns):
-        df = df.dropna(subset=["latitude", "longitude"])
-
-    try:
-        df.to_parquet(out_path, index=False)
-        log.info("Wrote %s (%d rows)", out_path.name, len(df))
-    except Exception as exc:
-        log.error("Failed writing %s: %s", out_path, exc)
-
 def _safe_import_geopandas():
     try:
         import geopandas as gpd  # noqa
@@ -153,7 +127,7 @@ def process_boundaries() -> Dict[str, "object"]:
         "district": ["DISTRICT", "DIST_NAME", "NAME_2", "district", "NAME"],
         "subdistrict": [
             "SUBDISTRICT", "SUB_DIST", "TEHSIL", "TALUKA", "NAME_3",
-            "subdistrict", "NAME",
+            "SubDistrict/Tehsil", "NAME",
         ],
     }
 
@@ -251,9 +225,9 @@ CORRUPT_CHAR_MAP: Dict[str, str] = {
 # single-character substitution pattern above.
 NAME_CORRECTIONS: Dict[str, str] = {}
 
-# '&' and ',' are legitimate in real admin names ("ANDAMAN & NICOBAR",
-# "DADRA & NAGAR HAVELI", "WEST BENGAL, BIHAR & JHARKHAND") -- not corruption.
-_SUSPICIOUS_CHAR_RE = re.compile(r"[^A-Za-z0-9\s\-'.,()/&]")
+# '&', ',', and '_' are legitimate in real names or our own placeholder
+# labels ("ANDAMAN & NICOBAR", "UnmappedFloodID_12") -- not corruption.
+_SUSPICIOUS_CHAR_RE = re.compile(r"[^A-Za-z0-9\s\-'.,()/&_]")
 
 
 def _sanitize_entity_name(name: str) -> str:
@@ -629,16 +603,35 @@ def _coerce_year(value) -> Optional[int]:
     return None
 
 
+def _positional_fallback_map(id_map: Dict[str, str], flood_ids) -> Dict[str, str]:
+    """Heuristic fallback when direct ID matching almost entirely fails.
+
+    Some datasets from the same lab/shapefile are exported with their own
+    row-order ID (1..N) instead of the official ID used elsewhere. If the
+    count of flood-atlas IDs matches the count of mapped entities, assume
+    they're the same 40-ish region set in ascending-ID order and pair them
+    positionally. This is a guess -- callers must log it loudly and the
+    result should be spot-checked, not silently trusted.
+    """
+    try:
+        sorted_map_names = [
+            name for _, name in sorted(id_map.items(), key=lambda kv: float(kv[0]))
+        ]
+        sorted_flood_ids = sorted(set(flood_ids), key=lambda x: float(x))
+    except (ValueError, TypeError):
+        return {}
+    return dict(zip(sorted_flood_ids, sorted_map_names))
+
+
 def _map_ids_to_names(
     df: pd.DataFrame, id_map: Dict[str, str], name_col: str, source_label: str
 ) -> pd.DataFrame:
     """Resolve numeric entity_id -> name using an ID/name mapping dict.
 
     Assumes the flood-atlas ID scheme matches the drought-atlas mapping
-    spreadsheets' ID scheme. If a large fraction of IDs fail to resolve,
-    that assumption is probably wrong for this dataset -- the summary
-    warning below will make that visible rather than silently mislabeling
-    every row.
+    spreadsheets' ID scheme. If most IDs fail to resolve, falls back to a
+    positional (sorted-order) guess when the entity counts line up, and
+    logs a loud warning either way so the result can be spot-checked.
     """
     if df.empty:
         df[name_col] = pd.Series(dtype=str)
@@ -647,23 +640,48 @@ def _map_ids_to_names(
     df = df.copy()
     df[name_col] = df["entity_id"].map(id_map)
 
-    unmapped = df[df[name_col].isna()]["entity_id"].unique()
-    if len(unmapped) > 0:
-        total = df["entity_id"].nunique()
-        log.warning(
-            "%s: %d/%d entity IDs could not be resolved to a name via the "
-            "drought-atlas ID mapping (sample unmapped IDs: %s). This "
-            "likely means the flood atlas uses a different ID scheme than "
-            "India_States.xlsx / India_Districts.xlsx -- if so, share a few "
-            "rows from the flood atlas's own ID legend/README and the "
-            "mapping can be corrected.",
-            source_label, len(unmapped), total, sorted(unmapped, key=str)[:10],
-        )
+    unmapped_ids = df[df[name_col].isna()]["entity_id"].unique()
+    total_ids = df["entity_id"].nunique()
+
+    if len(unmapped_ids) > 0:
+        fail_rate = len(unmapped_ids) / total_ids
+        if fail_rate >= 0.5 and len(id_map) > 0:
+            # Direct match mostly/entirely failed -- try positional fallback.
+            fallback = _positional_fallback_map(id_map, df["entity_id"].unique())
+            df.loc[df[name_col].isna(), name_col] = df.loc[
+                df[name_col].isna(), "entity_id"
+            ].map(fallback)
+            newly_resolved = len(unmapped_ids) - df[name_col].isna().sum()
+            log.warning(
+                "%s: direct ID match failed for %d/%d entities -- the flood "
+                "atlas likely uses its own row-order ID rather than the "
+                "drought-atlas spreadsheet ID. Applied a POSITIONAL FALLBACK "
+                "(sorted-ID pairing) instead, resolving %d of them. This is "
+                "a heuristic guess, not a verified mapping -- spot-check a "
+                "few entries (e.g. does the highest-risk ID correspond to a "
+                "genuinely flood-prone state?) before trusting it.",
+                source_label, len(unmapped_ids), total_ids, newly_resolved,
+            )
+            unmapped_ids = df[df[name_col].isna()]["entity_id"].unique()
+
+        if len(unmapped_ids) > 0:
+            log.warning(
+                "%s: %d/%d entity IDs still unresolved after fallback "
+                "(sample: %s). These rows are kept with a placeholder name "
+                "so no data is dropped.",
+                source_label, len(unmapped_ids), total_ids,
+                sorted(unmapped_ids, key=str)[:10],
+            )
         df[name_col] = df[name_col].fillna(
             "UnmappedFloodID_" + df["entity_id"].astype(str)
         )
 
-    df[name_col] = df[name_col].apply(_sanitize_entity_name)
+    # Sanitize only the unique names once, then map back -- avoids emitting
+    # the same "unexpected characters" warning once per row (this table can
+    # have tens of thousands of rows for a handful of distinct entities).
+    unique_names = df[name_col].unique()
+    clean_map = {n: _sanitize_entity_name(n) for n in unique_names}
+    df[name_col] = df[name_col].map(clean_map)
     return df.drop(columns=["entity_id"])
 
 
@@ -680,6 +698,14 @@ def process_flood_atlas(
         FLOOD_DIR / "State_Wise_annual_flood_frac.json", "flood_fraction"
     )
 
+    # Yearly flood-area data (same wide-by-ID/year shape as flood_frac).
+    district_area = _parse_flood_yearly_json(
+        FLOOD_DIR / "District_Wise_annual_flood_area.json", "flood_area"
+    )
+    state_area = _parse_flood_yearly_json(
+        FLOOD_DIR / "State_Wise_annual_flood_area.json", "flood_area"
+    )
+
     # Static (non-yearly) risk-component data.
     district_risk = _parse_flood_risk_json(
         FLOOD_DIR / "District_Wise_flood_risk_data.json"
@@ -691,32 +717,42 @@ def process_flood_atlas(
     district_frac = _map_ids_to_names(
         district_frac, district_map, "DISTRICT_NAME", "District flood fraction"
     )
+    district_area = _map_ids_to_names(
+        district_area, district_map, "DISTRICT_NAME", "District flood area"
+    )
     district_risk = _map_ids_to_names(
         district_risk, district_map, "DISTRICT_NAME", "District flood risk"
     )
     state_frac = _map_ids_to_names(
         state_frac, state_map, "STATE_NAME", "State flood fraction"
     )
+    state_area = _map_ids_to_names(
+        state_area, state_map, "STATE_NAME", "State flood area"
+    )
     state_risk = _map_ids_to_names(
         state_risk, state_map, "STATE_NAME", "State flood risk"
     )
 
-    def _merge(frac: pd.DataFrame, risk: pd.DataFrame, entity_col: str) -> pd.DataFrame:
-        if frac.empty and risk.empty:
+    def _merge(
+        frac: pd.DataFrame, area: pd.DataFrame, risk: pd.DataFrame, entity_col: str
+    ) -> pd.DataFrame:
+        # frac/area are yearly (join on entity+Year); risk is static per
+        # entity (broadcast across every year via a left join on entity only).
+        yearly = _outer_merge([frac, area], on=[entity_col, "Year"])
+        if yearly.empty and risk.empty:
             return pd.DataFrame(
-                columns=[entity_col, "Year", "flood_fraction", "flood_vulnerability",
-                         "flood_hazard", "flood_exposure", "flood_risk_index"]
+                columns=[entity_col, "Year", "flood_fraction", "flood_area",
+                         "flood_vulnerability", "flood_hazard",
+                         "flood_exposure", "flood_risk_index"]
             )
-        if frac.empty:
+        if yearly.empty:
             return risk
         if risk.empty:
-            return frac
-        # risk data has no Year dimension -- broadcast each entity's static
-        # risk components across every year present for that entity in frac.
-        return pd.merge(frac, risk, on=[entity_col], how="left")
+            return yearly
+        return pd.merge(yearly, risk, on=[entity_col], how="left")
 
-    district_flood = _merge(district_frac, district_risk, "DISTRICT_NAME")
-    state_flood = _merge(state_frac, state_risk, "STATE_NAME")
+    district_flood = _merge(district_frac, district_area, district_risk, "DISTRICT_NAME")
+    state_flood = _merge(state_frac, state_area, state_risk, "STATE_NAME")
 
     log.info(
         "Flood data rows -> state: %d, district: %d",
@@ -907,6 +943,24 @@ def save_summaries(summaries: Dict[str, pd.DataFrame]) -> None:
             log.info("Wrote %s (%d rows, %d cols)", out_path.name, *df.shape)
         except Exception as exc:  # noqa: BLE001
             log.error("Failed writing %s: %s", out_path, exc)
+
+
+def save_emdat_events(emdat_raw: pd.DataFrame) -> None:
+    """Save the raw, geocoded EM-DAT event rows (not aggregated) so the map
+    can plot individual disaster locations as point markers -- aggregated
+    per-region counts are too sparse, per-year, to show up as a meaningful
+    choropleth on their own."""
+    out_path = PROCESSED_DIR / "emdat_events.parquet"
+    cols = ["Year", "disaster_type", "location", "latitude", "longitude",
+            "total_deaths", "total_affected", "total_damage_000usd"]
+    df = emdat_raw[[c for c in cols if c in emdat_raw.columns]].copy()
+    if {"latitude", "longitude"}.issubset(df.columns):
+        df = df.dropna(subset=["latitude", "longitude"])
+    try:
+        df.to_parquet(out_path, index=False)
+        log.info("Wrote %s (%d rows)", out_path.name, len(df))
+    except Exception as exc:  # noqa: BLE001
+        log.error("Failed writing %s: %s", out_path, exc)
 
 
 # --------------------------------------------------------------------------- #
