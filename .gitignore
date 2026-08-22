@@ -1,2 +1,9 @@
-data/
 .venv/
+
+# Ignore raw data folders inside data/ (keeping data/processed/ tracked)
+data/DATA_SPEI_DroughtAtlas/
+data/india-flood-atlas-data-main/
+
+# Ignore all raw zip and excel files inside data/
+data/*.zip
+data/*.xlsx
