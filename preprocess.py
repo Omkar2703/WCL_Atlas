@@ -29,7 +29,7 @@ Run:
 """
 
 from __future__ import annotations
-
+import difflib
 import glob
 import json
 import logging
@@ -921,13 +921,58 @@ def build_summaries(
         on=["DISTRICT_NAME", "Year"],
     )
     subdistrict_summary = drought["subdistrict"].copy()
-
+    # --- INTEGRATE VULNERABILITY INDEX ---
+    # --- INTEGRATE VULNERABILITY INDEX ---
+    import os
+    try:
+        vuln_path = "data\\Final_Vulnerability_Index_1.csv"
+        if os.path.exists(vuln_path):
+            vuln_df = pd.read_csv(vuln_path)
+            
+            # 1. State Level Vulnerability Integration
+            state_vuln = vuln_df.groupby('State name')['Vulnerability_Index'].mean().reset_index()
+            state_vuln['STATE_NAME'] = state_vuln['State name'].astype(str).apply(_sanitize_entity_name)
+            
+            # Fuzzy match state names to map boundaries
+            valid_states = state_summary['STATE_NAME'].dropna().unique().tolist()
+            def match_s(s):
+                if s in valid_states: return s
+                m = difflib.get_close_matches(s, valid_states, n=1, cutoff=0.7)
+                return m[0] if m else s
+            
+            state_vuln['STATE_NAME'] = state_vuln['STATE_NAME'].apply(match_s)
+            state_vuln = state_vuln.groupby('STATE_NAME', as_index=False)['Vulnerability_Index'].mean()
+            state_summary = pd.merge(state_summary, state_vuln, on="STATE_NAME", how="left")
+            
+            # 2. District Level Vulnerability Integration
+            dist_vuln = vuln_df[['District name', 'Vulnerability_Index']].copy()
+            dist_vuln['DISTRICT_NAME'] = dist_vuln['District name'].astype(str).apply(_sanitize_entity_name)
+            
+            # Fuzzy match district names to map boundaries
+            valid_dists = district_summary['DISTRICT_NAME'].dropna().unique().tolist()
+            def match_d(d):
+                if d in valid_dists: return d
+                m = difflib.get_close_matches(d, valid_dists, n=1, cutoff=0.8)
+                return m[0] if m else d
+                
+            dist_vuln['DISTRICT_NAME'] = dist_vuln['DISTRICT_NAME'].apply(match_d)
+            dist_vuln = dist_vuln.groupby('DISTRICT_NAME', as_index=False)['Vulnerability_Index'].mean()
+            district_summary = pd.merge(district_summary, dist_vuln, on="DISTRICT_NAME", how="left")
+            
+            log.info("Successfully matched and merged Vulnerability Index.")
+        else:
+            log.warning("Final_Vulnerability_Index.csv not found in the current folder.")
+    except Exception as e:
+        log.warning(f"Could not merge Final_Vulnerability_Index.csv: {e}")
+    # -------------------------------------
+    # -------------------------------------
     for df in (state_summary, district_summary, subdistrict_summary):
         for col in ("event_count", "total_deaths", "total_affected",
                     "total_damage_000usd"):
             if col in df.columns:
                 df[col] = df[col].fillna(0)
-
+    # --- ADD VULNERABILITY INDEX MERGE ---
+   
     return {
         "state": state_summary,
         "district": district_summary,

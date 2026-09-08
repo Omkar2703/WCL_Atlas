@@ -53,6 +53,7 @@ LEVEL_CONFIG = {
 }
 
 METRIC_OPTIONS = {
+   "Vulnerability Index": "Vulnerability_Index",
     "Drought Index (SPEI)": "SPEI-12month",
     "Flood Fraction": "flood_fraction",
     "Flood Area": "flood_area",
@@ -321,9 +322,18 @@ def event_color(value: Optional[float]) -> str:
     if value >= 1:
         return "#fdd0a2"
     return "#ffffd9"
-
+def vuln_color(value: Optional[float]) -> str:
+    if value is None or pd.isna(value): return "#d9d9d9"
+    if value >= 0.68: return "#67000d"
+    if value >= 0.63: return "#a50f15"
+    if value >= 0.58: return "#ef3b2c"
+    if value >= 0.53: return "#fc9272"
+    if value >= 0.48: return "#fcbba1"
+    if value >= 0.43: return "#fee0d2"
+    return "#fff5f0"    # Very Low
 
 COLOR_FUNCS = {
+    "Vulnerability_Index": vuln_color,
     "SPEI-12month": spei_color,
     "flood_fraction": flood_color,
     "flood_area": flood_area_color,
@@ -331,6 +341,16 @@ COLOR_FUNCS = {
 }
 
 LEGEND_DEFS = {
+   "Vulnerability_Index": [
+        ("Very High (≥ 0.68)", "#67000d"),
+        ("High (0.63 – 0.67)", "#a50f15"),
+        ("Moderate-High (0.58 – 0.62)", "#ef3b2c"),
+        ("Moderate (0.53 – 0.57)", "#fc9272"),
+        ("Low-Moderate (0.48 – 0.52)", "#fcbba1"),
+        ("Low (0.43 – 0.47)", "#fee0d2"),
+        ("Very Low (≤ 0.42)", "#fff5f0"),
+        ("No data", "#d9d9d9"),
+    ],
     "SPEI-12month": [
         ("Extreme drought (\u2264 -2.0)", "#67000d"),
         ("Severe drought (-2.0 to -1.5)", "#a50f15"),
@@ -560,13 +580,14 @@ if geojson_data is not None:
     for feature in geojson_data.get("features", []):
         name = feature["properties"].get(name_field)
         row = lookup.loc[name] if (not lookup.empty and name in lookup.index) else None
-        spei_val = flood_val = area_val = "N/A"
+        spei_val = flood_val = area_val = vuln_val = "N/A"
         if row is not None:
-            if isinstance(row, pd.DataFrame):
-                row = row.iloc[0]
+            if isinstance(row, pd.DataFrame): row = row.iloc[0]
             spei_val = round(row.get("SPEI-12month"), 2) if pd.notna(row.get("SPEI-12month", None)) else "N/A"
             flood_val = round(row.get("flood_fraction"), 2) if pd.notna(row.get("flood_fraction", None)) else "N/A"
             area_val = round(row.get("flood_area"), 1) if pd.notna(row.get("flood_area", None)) else "N/A"
+            # Add this line:
+            vuln_val = round(row.get("Vulnerability_Index"), 3) if pd.notna(row.get("Vulnerability_Index", None)) else "N/A"
         
         events_val = (
             int(total_events_by_entity.get(name, 0))
@@ -578,6 +599,7 @@ if geojson_data is not None:
             f"SPEI-12mo ({selected_year}): {spei_val}<br>"
             f"Flood Fraction ({selected_year}): {flood_val}%<br>"
             f"Flood Area ({selected_year}): {area_val} km\u00b2<br>"
+            f"Vulnerability Index ({selected_year}): {vuln_val}<br>"
             f"Disaster Events (All Years): {events_val}"
         )
 
@@ -693,14 +715,21 @@ if selected_region and not summary_df.empty:
         total_deaths = region_hist["total_deaths"].sum() if "total_deaths" in region_hist else 0
         total_affected = region_hist["total_affected"].sum() if "total_affected" in region_hist else 0
 
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5) # Changed to 5 columns
         m1.metric("Total Disasters", format_compact_number(total_disasters))
         m2.metric("Total Deaths", format_compact_number(total_deaths))
         m3.metric("Total Affected", format_compact_number(total_affected))
 
+        # Add this vulnerability metric card:
+        if not latest.empty and "Vulnerability_Index" in latest.columns:
+            v_now = latest["Vulnerability_Index"].iloc[0]
+            m4.metric("Vulnerability Index", f"{v_now:.3f}" if pd.notna(v_now) else "N/A")
+        else:
+            m4.metric("Vulnerability Index", "N/A")
+
         if not latest.empty and "SPEI-12month" in latest.columns:
             spei_now = latest["SPEI-12month"].iloc[0]
-            m4.metric(
+            m5.metric(
                 f"SPEI-12mo ({selected_year})",
                 f"{spei_now:.2f}" if pd.notna(spei_now) else "N/A",
             )
